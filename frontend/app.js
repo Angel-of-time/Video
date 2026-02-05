@@ -80,7 +80,16 @@ class MediaResolverApp {
         
         try {
             // Call API
-            const response = await fetch(`${this.apiUrl}/resolve?url=${encodeURIComponent(url)}`);
+                    try {
+            // Call API
+            // NEW (Fixed - sends POST)
+            const response = await fetch(`${this.apiUrl}/resolve?url=${encodeURIComponent(url)}`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
             const data = await response.json();
             
             if (!response.ok) {
