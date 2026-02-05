@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 import os
 import time
@@ -203,6 +204,15 @@ async def general_exception_handler(request, exc):
         content={"success": False, "error": "Internal server error"}
     )
 
-# Mount static files for frontend (if available)
+# # ✅ FIX: Use this block instead
+# Ensure you have imported FileResponse at the top:
+# from fastapi.responses import FileResponse
+
 if os.path.exists("/app/frontend"):
-    app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")
+    # 1. Mount assets to "/static" so they don't block your API
+    app.mount("/static", StaticFiles(directory="/app/frontend"), name="static")
+
+    # 2. Serve index.html specifically at the root "/"
+    @app.get("/")
+    async def read_index():
+        return FileResponse("/app/frontend/index.html")
