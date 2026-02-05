@@ -7,16 +7,22 @@ class CentralMoonApp {
     init() {
         const urlInput = document.getElementById('urlInput');
         const resolveBtn = document.getElementById('resolveBtn');
-
-        // Click Event
         resolveBtn.addEventListener('click', () => this.resolve());
-
-        // Enter Key Event
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.resolve();
         });
+        this.checkClipboard();
+        console.log("🌑 Central Moon v2.3 Loaded");
+    }
 
-        console.log("🌑 Central Moon Loaded - By Frdinkoi");
+    async checkClipboard() {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text.startsWith('http')) {
+                // Optional: Auto-paste logic
+                // document.getElementById('urlInput').value = text;
+            }
+        } catch (e) {}
     }
     
     async resolve() {
@@ -30,7 +36,7 @@ class CentralMoonApp {
         document.getElementById('results').classList.add('d-none');
 
         try {
-            // THE FIX: Correct POST request with JSON headers
+            // POST Request
             const response = await fetch(`${this.apiUrl}/resolve?url=${encodeURIComponent(url)}`, {
                 method: 'POST',
                 headers: { 'Accept': 'application/json' }
@@ -45,55 +51,97 @@ class CentralMoonApp {
 
         } catch (error) {
             console.error(error);
-            this.showError(error.message || "Failed to connect to Central Moon server.");
+            const msg = error.message === 'Method Not Allowed' ? 'Please refresh the page (Update Required)' : error.message;
+            this.showError(msg);
         } finally {
             this.setLoading(false);
         }
     }
     
     renderResults(data) {
-        // 1. Fill Info
+        // 1. Info
         document.getElementById('title').textContent = data.title || 'Unknown Title';
         document.getElementById('thumbnail').src = data.thumbnail || '';
-        document.getElementById('uploader').querySelector('span').textContent = data.uploader || 'Unknown';
+        const uploader = data.uploader || 'Unknown';
+        document.getElementById('uploader').innerHTML = `<i class="fas fa-user me-2"></i>${uploader}`;
         document.getElementById('description').textContent = data.description || '';
         
-        // 2. Clear & Fill Formats
+        // 2. Clear List
         const list = document.getElementById('formatsList');
         const template = document.getElementById('formatTemplate');
         list.innerHTML = '';
 
         const formats = data.formats || [];
-        if (formats.length === 0) list.innerHTML = '<div class="text-center text-muted">No download links found.</div>';
+        if (formats.length === 0) {
+            list.innerHTML = '<div class="text-center text-muted">No download links found.</div>';
+            document.getElementById('results').classList.remove('d-none');
+            return;
+        }
 
-        formats.forEach(fmt => {
+        // 3. Helper to create row
+        const addFormat = (fmt, isAudio) => {
             const clone = template.content.cloneNode(true);
+            const badge = clone.querySelector('.format-badge');
             
-            // Badge (MP4/MP3)
-            clone.querySelector('.format-badge').textContent = (fmt.ext || 'FILE').toUpperCase();
+            // Badge Style
+            if (isAudio) {
+                badge.textContent = "MP3 / AUDIO";
+                badge.className = 'format-badge badge bg-warning text-dark me-3';
+            } else {
+                badge.textContent = (fmt.ext || 'MP4').toUpperCase();
+                badge.className = 'format-badge badge bg-primary me-3';
+            }
             
-            // Name (1080p, etc)
+            // Name/Quality
             let quality = fmt.quality || fmt.resolution || 'Standard';
-            if (fmt.fps && fmt.fps > 30) quality += ` ${fmt.fps}fps`;
+            if (!isAudio && fmt.fps > 30) quality += ` ${fmt.fps}fps`;
+            if (isAudio) quality = "High Quality Audio";
             clone.querySelector('.format-name').textContent = quality;
 
             // Size
             const sizeMB = fmt.filesize ? (fmt.filesize / 1024 / 1024).toFixed(1) + ' MB' : '';
             clone.querySelector('.format-size').textContent = sizeMB;
 
-            // Buttons
+            // Link Logic
             const downloadUrl = fmt.download_url.startsWith('http') ? fmt.download_url : this.apiUrl + fmt.download_url;
-            clone.querySelector('.download-btn').href = downloadUrl;
+            
+            const dlBtn = clone.querySelector('.download-btn');
+            dlBtn.href = downloadUrl;
+            dlBtn.removeAttribute('target'); // Force download on same page
             
             clone.querySelector('.copy-btn').addEventListener('click', () => {
                 navigator.clipboard.writeText(downloadUrl);
-                alert('Link copied to clipboard!');
+                alert('Link copied!');
             });
 
             list.appendChild(clone);
-        });
+        };
 
-        // 3. Show Results
+        // 4. Split Audio & Video
+        const audioOnly = formats.filter(f => f.vcodec === 'none' || f.acodec !== 'none' && f.vcodec === 'none');
+        const videoOnly = formats.filter(f => f.vcodec !== 'none');
+
+        // Render Video
+        if (videoOnly.length > 0) {
+            const h = document.createElement('div');
+            h.className = "text-muted small fw-bold text-uppercase mt-2 mb-2 ps-2";
+            h.innerText = "Video";
+            list.appendChild(h);
+            // Sort by quality (height) descending
+            videoOnly.sort((a,b) => (b.height || 0) - (a.height || 0));
+            videoOnly.forEach(f => addFormat(f, false));
+        }
+
+        // Render Audio
+        if (audioOnly.length > 0) {
+            const h = document.createElement('div');
+            h.className = "text-muted small fw-bold text-uppercase mt-4 mb-2 ps-2";
+            h.innerText = "Audio";
+            list.appendChild(h);
+            // Pick best audio
+            addFormat(audioOnly[0], true); 
+        }
+
         document.getElementById('results').classList.remove('d-none');
     }
     
@@ -110,9 +158,8 @@ class CentralMoonApp {
     }
     
     showError(msg) {
-        const errEl = document.getElementById('error');
         document.getElementById('errorText').textContent = msg;
-        errEl.classList.remove('d-none');
+        document.getElementById('error').classList.remove('d-none');
     }
     
     hideError() {
@@ -120,5 +167,4 @@ class CentralMoonApp {
     }
 }
 
-// Start
 document.addEventListener('DOMContentLoaded', () => new CentralMoonApp());
