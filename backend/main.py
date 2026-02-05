@@ -1,14 +1,13 @@
-from fastapi import FastAPI, HTTPException, Query, Depends, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from contextlib import asynccontextmanager
 import os
 import time
 import json
+from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
-import asyncio
+
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from media_resolver import MediaResolver
 from link_signer import LinkSigner
@@ -82,18 +81,7 @@ def rate_limit_check(request: Request, limit_per_minute: int = 60):
         request_timestamps[client_ip] = []
     request_timestamps[client_ip].append(now)
 
-# Routes
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": "Universal Media Resolver",
-        "version": "2.1.0",
-        "status": "operational",
-        "docs": "/docs",
-        "health": "/health",
-        "environment": "/environment"
-    }
+# --- API ROUTES ---
 
 @app.get("/health")
 async def health_check():
@@ -189,7 +177,8 @@ async def get_supported_sites():
         }
     }
 
-# Error handlers
+# --- ERROR HANDLERS ---
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     return JSONResponse(
@@ -204,15 +193,35 @@ async def general_exception_handler(request, exc):
         content={"success": False, "error": "Internal server error"}
     )
 
-# # ✅ FIX: Use this block instead
-# Ensure you have imported FileResponse at the top:
-# from fastapi.responses import FileResponse
+# --- FRONTEND SERVING LOGIC ---
 
-if os.path.exists("/app/frontend"):
-    # 1. Mount assets to "/static" so they don't block your API
-    app.mount("/static", StaticFiles(directory="/app/frontend"), name="static")
+# Check if the frontend directory exists (Docker path vs Local path)
+# We prefer "/app/frontend" (Docker) but fallback to "frontend" (Local)
+frontend_path = "/app/frontend" if os.path.exists("/app/frontend") else "frontend"
 
-    # 2. Serve index.html specifically at the root "/"
+if os.path.exists(frontend_path):
+    print(f"✅ Frontend found at: {frontend_path}")
+    
+    # 1. Mount assets to "/static" (CSS, JS, Images)
+    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
+
+    # 2. Serve index.html at the root "/"
     @app.get("/")
     async def read_index():
-        return FileResponse("/app/frontend/index.html")
+        return FileResponse(os.path.join(frontend_path, "index.html"))
+
+else:
+    print("⚠️  Frontend folder not found. Serving API JSON at root.")
+    
+    # Fallback: If no frontend, show the API status JSON
+    @app.get("/")
+    async def root():
+        return {
+            "service": "Universal Media Resolver",
+            "version": "2.1.0",
+            "status": "operational",
+            "docs": "/docs",
+            "health": "/health",
+            "environment": "/environment",
+            "note": "Frontend not loaded (folder missing)"
+        }
