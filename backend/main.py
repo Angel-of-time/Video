@@ -216,12 +216,14 @@ else:
     # Fallback: If no frontend, show the API status JSON
     @app.get("/")
     async def root():
+        # DEBUG: List all files in the current directory to see what went wrong
+        current_files = os.listdir(".")
+        
         return {
             "service": "Universal Media Resolver",
-            "version": "2.1.0",
             "status": "operational",
-            "docs": "/docs",
-            "health": "/health",
-            "environment": "/environment",
-            "note": "Frontend not loaded (folder missing)"
+            "error": "Frontend folder missing",
+            "debug_current_path": os.getcwd(),
+            "debug_files_found": current_files,  # <--- THIS WILL SHOW US THE TRUTH
+            "note": "Check if 'frontend' is in your .dockerignore file"
         }
