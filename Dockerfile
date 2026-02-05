@@ -80,6 +80,7 @@ RUN pip install --no-cache-dir --find-links=/wheels -r requirements.txt \
 # Copy application code
 COPY backend/ /app/
 COPY docker-entrypoint.sh /app/
+COPY frontend/ /app/frontend/
 
 # Make entrypoint executable
 RUN chmod +x /app/docker-entrypoint.sh
