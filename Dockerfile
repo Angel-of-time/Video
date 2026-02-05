@@ -71,7 +71,8 @@ WORKDIR /app
 # Copy wheels and install Python dependencies
 COPY --from=builder --chown=appuser:appgroup /wheels /wheels
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --user --find-links=/wheels -r requirements.txt \
+# Removed '--user'. Installs to /usr/local/bin (accessible by everyone)
+RUN pip install --no-cache-dir --find-links=/wheels -r requirements.txt \
     && rm -rf /wheels \
     && rm -rf /root/.cache/pip
 
