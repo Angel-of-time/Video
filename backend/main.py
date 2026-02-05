@@ -3,10 +3,12 @@ import time
 import json
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
+import aiohttp
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from media_resolver import MediaResolver
@@ -24,31 +26,15 @@ startup_time = time.time()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan events for the app"""
-    # Startup
-    print("🚀 Starting Universal Media Resolver v2.1")
+    print("🚀 Starting Central Moon v2.3")
     env_info = env_detector.get_capabilities()
     print(f"📊 Environment: {json.dumps(env_info, indent=2, default=str)}")
-    
-    # Store environment info
     app.state.environment_info = env_info
-    
     yield
-    
-    # Shutdown
     print("👋 Shutting down...")
 
-# Create FastAPI app
-app = FastAPI(
-    title="Universal Media Resolver",
-    description="Resolve media URLs from 1000+ sites",
-    version="2.1.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
+app = FastAPI(title="Central Moon", version="2.3.0", lifespan=lifespan)
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -57,69 +43,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Rate limiting store (simple in-memory for now)
-request_timestamps = {}
-
-def rate_limit_check(request: Request, limit_per_minute: int = 60):
-    """Simple rate limiting"""
-    client_ip = request.client.host
-    now = time.time()
-    
-    # Clean old timestamps
-    if client_ip in request_timestamps:
-        request_timestamps[client_ip] = [
-            ts for ts in request_timestamps[client_ip] 
-            if now - ts < 60
-        ]
-    
-    # Check limit
-    if len(request_timestamps.get(client_ip, [])) >= limit_per_minute:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    
-    # Add timestamp
-    if client_ip not in request_timestamps:
-        request_timestamps[client_ip] = []
-    request_timestamps[client_ip].append(now)
-
-# --- API ROUTES ---
+# --- ROUTES ---
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    uptime = time.time() - startup_time
-    return {
-        "status": "healthy",
-        "timestamp": time.time(),
-        "uptime_seconds": uptime,
-        "version": "2.1.0"
-    }
-
-@app.get("/environment")
-async def environment_info():
-    """Get environment information"""
-    return app.state.environment_info
+    return {"status": "healthy", "version": "2.3.0"}
 
 @app.post("/resolve")
 async def resolve_url(
     request: Request,
-    url: str = Query(..., description="Media URL to resolve"),
-    format: Optional[str] = Query(None, description="Preferred format (mp4, mp3, best, worst)"),
-    quality: Optional[str] = Query(None, description="Preferred quality (1080p, 720p, 480p)")
+    url: str = Query(..., description="Media URL"),
 ):
-    """Resolve a media URL to direct download links"""
-    # Rate limiting
-    rate_limit_check(request)
-    
     try:
-        # Resolve media info
-        media_info = await resolver.resolve(url, format_preference=format, quality_preference=quality)
+        # 1. Get Media Info
+        media_info = await resolver.resolve(url)
         
-        # Generate signed download tokens for each format
+        # 2. Sign Links (Store Title inside token for filename)
         signed_links = []
+        # Clean title for filename
+        raw_title = media_info.get("title", "download")
+        safe_title = "".join([c for c in raw_title if c.isalnum() or c in (' ', '-', '_')]).strip()[:50]
+        
         for fmt in media_info.get("formats", []):
             download_url = fmt.get("url")
             if download_url:
-                token = signer.sign_url(download_url)
+                # Add metadata to token
+                meta = {
+                    't': safe_title,
+                    'e': fmt.get('ext', 'mp4')
+                }
+                token = signer.sign_url(download_url, metadata=meta)
+                
                 fmt["download_token"] = token
                 fmt["download_url"] = f"/download/{token}"
                 signed_links.append(fmt)
@@ -127,12 +81,8 @@ async def resolve_url(
         return {
             "success": True,
             "data": {
-                "id": media_info.get("id"),
-                "title": media_info.get("title"),
-                "duration": media_info.get("duration"),
-                "thumbnail": media_info.get("thumbnail"),
-                "formats": signed_links,
-                "resolved_at": time.time()
+                **media_info,
+                "formats": signed_links
             }
         }
     except Exception as e:
@@ -140,90 +90,56 @@ async def resolve_url(
 
 @app.get("/download/{token}")
 async def download_media(token: str):
-    """Redirect to actual media URL with signed token"""
+    """
+    PROXY STREAM: The server downloads the file and passes it to the user.
+    This fixes the '403 Forbidden' error on TikTok/Instagram.
+    """
     try:
-        # Verify and decode token
-        url = signer.verify_token(token)
-        if not url:
-            raise HTTPException(status_code=404, detail="Invalid or expired token")
+        # 1. Verify Token
+        token_info = signer.get_token_info(token)
+        if not token_info['valid']:
+            raise HTTPException(status_code=403, detail="Link expired")
         
-        # Redirect to actual media URL
-        return RedirectResponse(url, status_code=302)
+        target_url = token_info['url']
+        meta = token_info.get('metadata', {})
+        
+        # Build Filename: "My Video Title.mp4"
+        filename = f"{meta.get('t', 'video')}.{meta.get('e', 'mp4')}"
+        encoded_filename = quote(filename)
+
+        # 2. Stream the file
+        async def iterfile():
+            async with aiohttp.ClientSession() as session:
+                # User-Agent is critical for TikTok
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.tiktok.com/'
+                }
+                async with session.get(target_url, headers=headers) as resp:
+                    if resp.status >= 400:
+                        yield b"" # Stop if error
+                        return
+                    
+                    async for chunk in resp.content.iter_chunked(1024 * 1024): # 1MB chunks
+                        yield chunk
+
+        # 3. Return as Attachment (Forces browser to show download dialog)
+        return StreamingResponse(
+            iterfile(), 
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=utf-8''{encoded_filename}"
+            }
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"Download Error: {e}")
+        raise HTTPException(status_code=400, detail="Download failed")
 
-@app.get("/info")
-async def get_info(
-    request: Request,
-    url: str = Query(..., description="URL to get info about")
-):
-    """Get information about a URL without downloading"""
-    rate_limit_check(request, limit_per_minute=30)
-    
-    try:
-        info = await resolver.get_info(url)
-        return {"success": True, "data": info}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/supported")
-async def get_supported_sites():
-    """Get list of supported sites"""
-    return {
-        "success": True,
-        "data": {
-            "sites": resolver.get_supported_sites(),
-            "count": len(resolver.get_supported_sites())
-        }
-    }
-
-# --- ERROR HANDLERS ---
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"success": False, "error": exc.detail}
-    )
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"success": False, "error": "Internal server error"}
-    )
-
-# --- FRONTEND SERVING LOGIC ---
-
-# Check if the frontend directory exists (Docker path vs Local path)
-# We prefer "/app/frontend" (Docker) but fallback to "frontend" (Local)
+# --- FRONTEND ---
 frontend_path = "/app/frontend" if os.path.exists("/app/frontend") else "frontend"
-
 if os.path.exists(frontend_path):
-    print(f"✅ Frontend found at: {frontend_path}")
-    
-    # 1. Mount assets to "/static" (CSS, JS, Images)
     app.mount("/static", StaticFiles(directory=frontend_path), name="static")
-
-    # 2. Serve index.html at the root "/"
     @app.get("/")
     async def read_index():
         return FileResponse(os.path.join(frontend_path, "index.html"))
-
-else:
-    print("⚠️  Frontend folder not found. Serving API JSON at root.")
-    
-    # Fallback: If no frontend, show the API status JSON
-    @app.get("/")
-    async def root():
-        # DEBUG: List all files in the current directory to see what went wrong
-        current_files = os.listdir(".")
-        
-        return {
-            "service": "Universal Media Resolver",
-            "status": "operational",
-            "error": "Frontend folder missing",
-            "debug_current_path": os.getcwd(),
-            "debug_files_found": current_files,  # <--- THIS WILL SHOW US THE TRUTH
-            "note": "Check if 'frontend' is in your .dockerignore file"
-        }
