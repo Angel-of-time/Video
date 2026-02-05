@@ -40,7 +40,8 @@ ENV HOST=0.0.0.0 \
     LOG_LEVEL=info \
     JWT_SECRET=change-in-production \
     TOKEN_EXPIRE_MINUTES=30 \
-    CORS_ORIGINS="*" \
+    # Must be a valid JSON list string
+    CORS_ORIGINS='["*"]' \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PATH="/app/bin:${PATH}"
