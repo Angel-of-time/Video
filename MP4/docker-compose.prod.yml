@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  media-resolver:
+    # Production-specific overrides
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    environment:
+      - LOG_LEVEL=warning
+      - WORKERS=4
+    # Add security labels
+    labels:
+      - "traefik.http.routers.media-resolver.middlewares=security-headers@file"
+      - "traefik.http.middlewares.security-headers.headers.customFrameOptionsValue=SAMEORIGIN"
+      - "traefik.http.middlewares.security-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.security-headers.headers.browserXSSFilter=true"
+
+  # Add nginx as reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: media-resolver-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - media-network
+    depends_on:
+      - media-resolver
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=false"
+
+  # Watchtower for auto-updates
+  watchtower:
+    image: containrrr/watchtower
+    container_name: media-resolver-watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --interval
+      - "300"
+      - --label-enable
+      - --cleanup
+    environment:
+      - TZ=UTC
+    restart: unless-stopped
